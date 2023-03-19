@@ -22,13 +22,14 @@ object SessionManager2 {
     fun onSessionStarted(sessionId: UUID, session: DefaultWebSocketServerSession) {
         //세션이 시작되면 먼저 코루틴 하나 실행하고, mutex로 동시접근을 막아 중복 에러를 방지한다.
         sessionManagerScope.launch {
-            println("뭐야?")
+            println("onSessionStarted 뭐야?")
             mutex.withLock {
                 //클라이언트 맵의 사이즈가 1개 이상 존재하면,
                 if (clients.size > 1) {
                     println("뭐야? 3")
                     //이번에는 취소불가능한 또다른 코루틴을 생성하여
                     sessionManagerScope.launch(NonCancellable) {//기존의 코드전용임: 접속한 클라가 2명일때, 다른 클라가 접속하면 소켓연결을 끊어버림.
+                        println("뭐야? 4")
                         //해당 클라이언트에게 논쓰레드세이프한 Frame객체를 전송한다.
                         //Close()는 웹소켓세션이 닫혔다는 것을 알리는 용도로 전달. Raw 웹세션이 아니라면..
                         // 보통 Frame은 관리될 필요가 없다고 함.
@@ -36,15 +37,17 @@ object SessionManager2 {
                         // 결국 접속 유저를 2명으로 제한하고 싶은 것이고, 다자간 연결을 계층적으로 관리하고 싶다면,
                         // 저 맵자체를 최상위로하고, 맵의 value로 vector등의 리스트를 이용해 클라이언트의 정보를 담은 객체
                         //를 넣어주는 방식으로 관리해야함.
-                        session.send(Frame.Close()) // only two peers are supported
+                        session.outgoing.send(Frame.Close()) // only two peers are supported
                         //다른 코루틴에서 소켓끊는 작업을 하게두고, 이전 코루틴은 종료(return)해버림.
                     }
                     return@launch
                 }
+                println("뭐야? 5")
                 //소켓을 끊음과 동시에 현재 들어온 클라이언트의 uuid를 키로 값에 소켓 객체를 등록함..
                 //이때 clients Map의 키값으로 UUID는 고유
                 clients[sessionId] = session
-                session.send("Added as a client: $sessionId")
+                session.outgoing.send(Frame.Text("Added as a client: $sessionId"))
+                println("뭐야? 5-1")
                 if (clients.size > 1) {
                     sessionState = WebRTCSessionState.Ready
                 }
@@ -173,6 +176,7 @@ object SessionManager2 {
      * 2명이 되자마자 STATE Ready 를 현재 소켓 맵에 연결되어 있는 '모든 클라이언트'(아직2명)에게 보낸다.
      */
     private fun notifyAboutStateUpdate() {
+        println("notifyAboutStateUpdate()")
         clients.forEach { (_, client) ->
             client.send("${MessageType.STATE} $sessionState")
         }
@@ -180,7 +184,9 @@ object SessionManager2 {
 
     private fun DefaultWebSocketServerSession.send(message: String) {
         sessionManagerScope.launch {
-            this@send.send(Frame.Text(message))
+            this@send.outgoing.send(Frame.Text(message))
+            println("send() of $message")
+
         }
     }
 }

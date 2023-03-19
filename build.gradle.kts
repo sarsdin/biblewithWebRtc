@@ -33,5 +33,11 @@ dependencies {
     testImplementation("io.ktor:ktor-server-tests-jvm:$ktor_version")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
 
+    implementation ("io.ktor:ktor-client-core:$ktor_version")
+    implementation ("io.ktor:ktor-client-core-jvm:$ktor_version")
+    implementation("io.ktor:ktor-client-cio:$ktor_version")
+    implementation ("io.ktor:ktor-client-websockets:$ktor_version")
+    implementation ("io.ktor:ktor-client-logging-jvm:$ktor_version")
+
     implementation("com.google.code.gson:gson:2.8.9")
 }
