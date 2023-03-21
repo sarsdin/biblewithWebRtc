@@ -20,51 +20,18 @@ fun Application.configureSockets() {
         masking = false
     }
     routing {
-//        webSocket("/rtc") { // websocketSession
-//            for (frame in incoming) {
-//                if (frame is Frame.Text) {
-//                    val text = frame.readText()
-//                    outgoing.send(Frame.Text("YOU SAID: $text"))
-//                    if (text.equals("bye", ignoreCase = true)) {
-//                        close(CloseReason(CloseReason.Codes.NORMAL, "Client said BYE"))
-//                    }
-//                }
-//            }
-//        }
+
         //들어오는 소켓요청에 대해 하나의 (작업단위)독립된 세션을 만듦. 요청하는 각각의 클라이언트가 각 세션단위를 가짐.
         //특정 명령까지의 작업(ICE)이 끝나거나 소켓의 연결이 끊키면, 반복루프가 종료되고 자연히 세션이 닫힘.
         webSocket("/rtc") {
 //            val sessionID = UUID.randomUUID() // 이값을 앱의 id(==email)로 삼아 등록해야겠음.
             var sessionID = ""
             var user: User? = null
-            var jInit: JsonObject? = null
             val sessionWork = SessionWork()
 
 
             try {
-                //처음 접속할때 유저 정보를 검사하고 추가해주는 절차를 가짐.
-//                println("[디버깅] 0")
-//                val socket = incoming
-//                println("[디버깅] 01")
-////                val fm = this.incoming.receive()
-//                val fm = socket.receive()
-//                println("[디버깅] 02")
-//                if (fm is Frame.Text) {
-//                println("[디버깅] 03")
-//                    jInit = JsonParser.parseString(fm.readText()) as JsonObject?
-//                    //시그널링클라이언트의 init시 등록한 속성(command)이 있는지, 그속성의 값이 ws_init인지 확인.
-//                    if (jInit != null && jInit.has("command") && jInit["command"].asString == "ws_init") {
-//                        println("[INIT] 처음 접속시 실행. 클라존재유무검사 실행.")
-//                        sessionID = jInit.asJsonObject["id"].asString
-//                        //아이디 중복검사 후 등록해야됨.
-//                        user = sessionWork.클라존재유무검사(jInit, this)
-//                        println("[INIT] sessionID: $sessionID, clients.size: ${clients.size},   $user")
-//                    }else{
-//                        println("[INIT] jInit Failed..ㅠㅠ")
-//                    }
-//                }
-
-
+//                초기접속시(this, sessionWork)
 
 //                println("[디버깅] 1")
                 //이후 반복문을 돌리면서 소켓으로부터 들어오는 메시지를 계속적으로 확인함.
@@ -129,14 +96,13 @@ fun Application.configureSockets() {
                 }
 
                 println("Exiting incoming loop, closing session: $sessionID")
-                sessionWork.onSessionClose(sessionID)
+                sessionWork.onSessionClose(user)
             } catch (e: ClosedReceiveChannelException) {
-                println("onClose $sessionID")
-                println("onClose $e")
-                sessionWork.onSessionClose(sessionID)
+                println("onClose $sessionID $e")
+                sessionWork.onSessionClose(user)
             } catch (e: Throwable) {
                 println("onError $sessionID $e")
-                sessionWork.onSessionClose(sessionID)
+                sessionWork.onSessionClose(user)
             }
         }
 
@@ -145,3 +111,53 @@ fun Application.configureSockets() {
 
     }
 }
+
+suspend fun 초기접속시(ws: DefaultWebSocketServerSession, sessionWork: SessionWork) {
+    //처음 접속할때 유저 정보를 검사하고 추가해주는 절차를 가짐.
+    println("[디버깅] 01")
+    var sessionID = ""
+    var jInit: JsonObject? = null
+    var user: User? = null
+
+    val frame = ws.incoming.receive()
+    println("[디버깅] 02")
+    if (frame is Frame.Text) {
+        println("[디버깅] 03")
+        jInit = JsonParser.parseString(frame.readText()) as JsonObject?
+        //시그널링클라이언트의 init시 등록한 속성(command)이 있는지, 그속성의 값이 ws_init인지 확인.
+        if (jInit != null && jInit.has("command") && jInit["command"].asString == "ws_init") {
+            println("[INIT] 처음 접속시 실행. 클라존재유무검사 실행.")
+            sessionID = jInit.asJsonObject["id"].asString
+            //아이디 중복검사 후 등록해야됨.
+            user = sessionWork.클라존재유무검사(jInit, ws)
+            println("[INIT] sessionID: $sessionID, clients.size: ${clients.size},   $user")
+        } else {
+            println("[INIT] jInit Failed..ㅠㅠ")
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//        webSocket("/rtc") { // websocketSession
+//            for (frame in incoming) {
+//                if (frame is Frame.Text) {
+//                    val text = frame.readText()
+//                    outgoing.send(Frame.Text("YOU SAID: $text"))
+//                    if (text.equals("bye", ignoreCase = true)) {
+//                        close(CloseReason(CloseReason.Codes.NORMAL, "Client said BYE"))
+//                    }
+//                }
+//            }
+//        }
