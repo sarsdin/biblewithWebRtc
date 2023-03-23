@@ -11,6 +11,10 @@ import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.slf4j.LoggerFactory
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * Originally written by Artem Bagritsevich.
@@ -45,6 +49,9 @@ class SessionWork {
 
     val sessionManagerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val mutex = Mutex()
+
+    val logger = LoggerFactory.getLogger(SessionWork::class.java)
+
     /**
      * 방만들기 또는 방접속시실행 메소드에서 만들거나 찾은 방장의 방을 멤버변수로 맵핑해준다.
      * 현재 유저의 소켓이 살아있는동안 접속하거나 만드는 방에 대한 접근을 제공해주는 용도임.
@@ -62,13 +69,15 @@ class SessionWork {
                 title = jin["title"].asString,
                 pwd = jin["pwd"].asString //pwd는 받는 클라쪽에서 null체크해야함. 방접속시에도 pwd 유무에따른 elseif문 추가해야함.
             )
-//                .apply { users.add(user) } //현재 방만들기시 방장 객체를 추가하여 만들고 있다. 테스트위해 잠시 주석처리.
+                .apply { users.add(user) } //현재 방만들기시 방장 객체를 추가하여 만들고 있다. 테스트위해 잠시 주석처리.
 
             //클래스의 멤버 변수에도 방금 만든 방 객체를 할당해준다.
             mRoom = rooms[user.id]!!
 
             val jOut = 방목록(user, "방만들기")
+            jOut.addProperty("makerId", user.id) // 방장이 만들고나서 바로 접속할 수 있도록, 클라에서 처리하기 위해 사용됨.
 
+            println("방만들기: $mRoom")
             //websocket으로 접속중인 모든 클라이언트 중 방장과 같은 모임에 접속해 있는 클라이언트들을 뽑은뒤
             //그 클라이언트들에 위에서 변환한 방목록 json객체를 보냄.(클라쪽에서 받을때는 형식이 어떻게 보내지는지 확인해야함. 맵변환이라
             //JsonObject인지 다른 형식인지 확인해봐야함)
@@ -81,6 +90,36 @@ class SessionWork {
             }
         }
     }
+
+
+    /**
+     * 클라이언트가 방접속시도시 방의 접속된 peerId들을 받아야함.
+     * 이때, 분기점: 방장이 수락을 하여야 받기 가능 or 일단 테스트용으로 받기 가능.
+     */
+    fun 방접속시도(user: User, jin: JsonObject) {
+        sessionManagerScope.launch {
+            val roomId = jin["roomId"].asString
+            val room = rooms[roomId]!!
+
+            val jo = room.users.run {
+                val tmp = JsonArray()
+                forEach {
+                    tmp.add(it.id)
+                }
+                tmp
+            }
+
+            logger.info("방접속시도: $jo")
+            println("방접속시도: $mRoom")
+            user.socket.send(Frame.Text(JsonObject().run {
+                addProperty("command", "방접속시도")
+                add("userIds", jo)
+                toString()
+            }))
+        }
+    }
+
+
 
     /**
      * 클라이언트가 방접속시 처음 실행되는 메소드.
@@ -95,6 +134,7 @@ class SessionWork {
                 // 다자간코드에서는 방장이 만든 방에 접속시, clients.size대신 설정한 인원수를 넣어줌.
                 val 방장아이디 = jin["makerId"].asString
                 println("방장아이디: $방장아이디")
+
                 //방의 존재유무확인 후 찾아서 그 방에 현재 접속한 유저를 유저리스트에 넣어줌.
                 if (rooms.containsKey(방장아이디)){
                     val room = rooms.get(방장아이디)!!
@@ -114,8 +154,8 @@ class SessionWork {
                         }
 
                     } else {
+                        // todo 방장의 수락 여부에 대한 부분 추가예정
                         //방에 접속한 유저를 넣어줌.
-
                         room.users.add(user)
                         println("방에 접속한 유저를 넣어줌 : ${room.users}")
 //                        user.socket.send("Added as a client: $user")
@@ -128,10 +168,17 @@ class SessionWork {
                         //그리고, 그걸 해당 방에 소속한 peer들에 sessionState를 전해야함.
                         notifyAboutStateUpdate(room)
 
+                        // todo  여기서 command만 날리는데, 방접속인원 리스트까지 같이 줘야함.
+                        //  참가 안누르고 대기해있는동안 방의 접속원이 변경될 수 있기 때문.
+                        user.socket.send(Frame.Text(JsonObject().run {
+                            addProperty("command", "방접속")
+                            toString()
+                        }))
+
+
                         //여기까지 진행되면 최소 2명이 확보되고, Ready상태가 됌. 이때, 클라방내부에서 방장이 OFFER명령을 게시하는 버튼등을
                         //눌러줘야함..(임시로) 아니면, 위의 sessionState값을 Ready말고 바로 방접속해서 2명이상되버리면 Creating으로 바꿔도
                         //될듯?
-
 
 
                         //밑은 (임시로) << 부분대신 수락/요청 시스템 도입시 바뀌는 사항들.
@@ -240,11 +287,11 @@ class SessionWork {
 
         //      처음 단일그룹을 만들때는 uuid+방만든사람id를 이용해 key값으로 정함.
         //      그리고 단일그룹 객체내 sessionState객체의 상태값을 대기중으로 바꾸고 방을 유지함.
-        if (mRoom.sessionState != WebRTCSessionState.Ready) {
-            error("Session should be in Ready state to handle offer")
-        }
+//        if (mRoom.sessionState != WebRTCSessionState.Ready) {
+//            error("Session should be in Ready state to handle offer")
+//        }
         mRoom.sessionState = WebRTCSessionState.Creating
-        println("$user 로부터 OFFER 메시지옴. 상태값으로 WebRTCSessionState.Creating 전달. message: $message")
+        println("$user 로부터 OFFER 메시지옴. 타겟은 ${message["peerId"].asString} 상태값으로 WebRTCSessionState.Creating 전달. message: $message")
         //서버 clients맵에 속한 소켓 전부에게 바뀐 상태를 전달함.
 
         notifyAboutStateUpdate(mRoom)
@@ -260,41 +307,52 @@ class SessionWork {
         //새코드: Offer보낸 클라를 제외한 방의 모든 클라에 Offer보낸 클라의 sdp를 전달.
         //todo 의문: 이렇게 모든 클라에 전달하면, 각 클라에 spd가 인원수 제곱으로 전달되고,
         // 그에따라 addIceCandidate()메소드가 너무 많이 실행되지 않나? 그러면 문제 생기지 않을까??
+        // 여기 user에서 peerId 받고 전달할때도 추가해야함.
         val jOut = JsonObject().apply {
             addProperty("command", "signalingCommand")
             addProperty("signalingCommand", "${MessageType.OFFER}")
+            addProperty("peerId", message["peerId"].asString)
             addProperty("sdp", message["sdp"].asString)
         }
-        mRoom.users.filter { it.id != user.id }.forEach {
-            it.socket.send(jOut.toString())
-        }
+        // 그리고, 각 클라이언트에서는 받은 peerId에 해당하는 현재 peerConnection 객체가 존재하는지
+        // 각자의 peerConnection map에서 확인해야할듯.
+//        mRoom.users.filter { it.id != user.id }.forEach {
+//            it.socket.send(jOut.toString())
+//        }
+        val peerIdOfTarget =  message["peerIdOf"].asString
+        mRoom.users.find { it.id == peerIdOfTarget }?.socket?.send(jOut.toString())
     }
 
     /**
-     * Answer 보낸 클라이언트의 sdp를 타 클라이언트에 전달.
+     * Answer보낸 클라이언트의 sdp를  Offer클라이언트에 전달.
      */
     private fun handleAnswer(user: User, message: JsonObject) {
 
-        if (mRoom.sessionState != WebRTCSessionState.Creating) {
-            error("Session should be in Creating state to handle answer")
-        }
+//        if (mRoom.sessionState != WebRTCSessionState.Creating) {
+//            error("Session should be in Creating state to handle answer")
+//        }
         println("$user 로부터 ANSWER 메시지옴. message: $message")
 
         //새코드: Answer보낸 클라를 제외한 방의 모든 클라에 Answer보낸 클라의 sdp를 전달.
         val jOut = JsonObject().apply {
             addProperty("command", "signalingCommand")
             addProperty("signalingCommand", "${MessageType.ANSWER}")
+            addProperty("peerId", message["peerId"].asString)
             addProperty("sdp", message["sdp"].asString)
         }
-        mRoom.users.filter { it.id != user.id }.forEach {
-            it.socket.send(jOut.toString())
-        }
+
+        //answer의 타겟이 되는 offer보낸 peer의 id로 answer sdp를 전달해야함.
+        val peerIdOfOffered = message["peerIdOf"].asString
+        mRoom.users.find { it.id == peerIdOfOffered }?.socket?.send(jOut.toString())
+//        mRoom.users.filter { it.id != user.id }.forEach {
+//            it.socket.send(jOut.toString())
+//        }
 
         // 해당하는 room의 size보다 users의 size가 같거나 더 크면 Active 상태를 알려서 클라의 Ui를 방꽉참 상태로 만듦.
-        if (mRoom.size <= mRoom.users.size ){
-            mRoom.sessionState = WebRTCSessionState.Active
-            notifyAboutStateUpdate(mRoom)
-        }
+//        if (mRoom.size <= mRoom.users.size ){
+//            mRoom.sessionState = WebRTCSessionState.Active
+//            notifyAboutStateUpdate(mRoom)
+//        }
     }
 
     /**
@@ -310,11 +368,18 @@ class SessionWork {
         val jOut = JsonObject().apply {
             addProperty("command", "signalingCommand")
             addProperty("signalingCommand", "${MessageType.ICE}")
+            addProperty("peerId", message["peerId"].asString)
+            addProperty("peerIdOf", message["peerIdOf"].asString)
             addProperty("sdp", message["sdp"].asString)
         }
-        mRoom.users.filter { it.id != user.id }.forEach {
-            it.socket.send(jOut.toString())
-        }
+
+        // todo 혹시 ICE 쪽에서 에러나면 이부분을 peerId(offer) & peerId(answer) 두 아이디 모두에게 보내줘야할듯.
+        //  현재는 offer peerId 따로 answer peerId 따로, 각 상황에 한쪽에만 보내는 중.
+        val peerId = message["peerId"].asString
+        mRoom.users.find { it.id == peerId }?.socket?.send(jOut.toString())
+//        mRoom.users.filter { it.id != user.id }.forEach {
+//            it.socket.send(jOut.toString())
+//        }
     }
 
     fun onSessionClose(user: User?) {
@@ -344,14 +409,42 @@ class SessionWork {
                     }
                 }
 
+                // todo 다자간연결에선 이부분을 바꿔야함. 해당 user의 id를 보내주고 impossible대신 방에서 나갔다는 상태메시지를 보내줘야함.
+//                mRoom.sessionState = WebRTCSessionState.Impossible
+//                notifyAboutStateUpdate(mRoom)
+                val jOut = JsonObject().apply {
+                    addProperty("command", "signalingCommand")
+                    addProperty("signalingCommand", "${MessageType.CLOSE}")
+                    addProperty("peerId", user?.id)
+                }
+
+                suspendCoroutine { cont: Continuation<Unit> ->
+                    mRoom.users.forEach {
+                        it.socket.send(jOut.toString())
+                    }
+                    cont.resumeWith(Result.success(Unit))
+                }
+
+
                 //마지막으로, 방장이 나간거라면 방목록에서 room객체를 아예 제거시켜줘야 함.
                 if (rooms.containsKey(user?.id)){
                     rooms.remove(user?.id)
                     println("onSessionClose() 방장이 나가서 방제거함.")
+
+                    mutex.withLock {
+                        //유저의 모임id와 같은 모임id에 있는 클라이언트를 찾고, 각각에 방이 제거되었다고 알림.
+                        clients.filter {
+                            it.value.groupId == user?.groupId
+                        }.forEach {
+                            it.value.socket.send(Frame.Text(JsonObject().run {
+                                addProperty("command", "방종료")
+                                addProperty("roomId", user?.id)
+                                toString()
+                            }))
+                        }
+                    }
                 }
 
-                mRoom.sessionState = WebRTCSessionState.Impossible
-                notifyAboutStateUpdate(mRoom)
             }
         }
     }
@@ -390,7 +483,10 @@ class SessionWork {
         }
     }
 
-    fun 클라존재유무검사(jin: JsonObject, socket: DefaultWebSocketServerSession) :User {
+    /**
+     * 클라이언트가 웹소켓을 통해 서버에 접속했을때, 자신의 정보를 가진 유저 객체를 만들기위한 절차.
+     */
+    fun 클라존재유무검사(jin: JsonObject, socket: DefaultWebSocketServerSession): User {
         println("[클라존재유무검사] jin: $jin")
         val user_email = jin["id"].asString
         if (clients.containsKey(user_email)) {
@@ -445,7 +541,7 @@ class SessionWork {
     /**
      * 현재 방목록(rooms)에서 접속한 user의 groupId와 같은 방을 찾아 뽑음.
      */
-    fun 방목록(user: User, command: String): JsonObject {
+    private fun 방목록(user: User, command: String): JsonObject {
         try {
             //방목록에서 user의 모임아이디와 같은 방들을 뽑음.
             val filteredRoomL = rooms.filter {
@@ -506,5 +602,6 @@ enum class MessageType {
     STATE,
     OFFER,
     ANSWER,
-    ICE
+    ICE,
+    CLOSE
 }

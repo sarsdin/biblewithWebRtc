@@ -67,7 +67,7 @@ fun Application.configureSockets() {
                                 sessionWork.방만들기(user!!, jin)
 
                             }
-                            "방접속" -> {
+                            "방접속시실행" -> {
                                 // 다른 클라가 방접속 command로 요청한 경우.
                                 // jin안의 클릭한 방정보(방장아이디)를 이용해 rooms객체에서 있는지 확인하고,
                                 // 거기에 이 유저(user변수)를 추가.
@@ -78,6 +78,15 @@ fun Application.configureSockets() {
                                     sessionWork.방접속시실행(user, jin)
                                 } else{
                                     println("[방접속] user 객체가 없음.")
+                                }
+
+                            }
+                            "방접속시도" -> {
+                                if (user != null) {
+                                    println("sessionWork.방접속시도() 실행. user: $user")
+                                    sessionWork.방접속시도(user, jin)
+                                } else{
+                                    println("[방접속시도] user 객체가 없음.")
                                 }
 
                             }
