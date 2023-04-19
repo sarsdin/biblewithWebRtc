@@ -1,6 +1,6 @@
 package future.plugins
 
-import User
+import future.User
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import future.SessionManager.clients
@@ -8,6 +8,7 @@ import future.SessionWork
 import io.ktor.server.application.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
+import io.ktor.utils.io.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import java.time.Duration
@@ -50,7 +51,7 @@ fun Application.configureSockets() {
 //                        println("[디버깅] 5 $command")
 
                         when (command) {
-                            "ws_init" -> {
+                            Command.ws_init.name -> {
                                 println("[INIT] 처음 접속시 실행. 클라존재유무검사 실행.")
                                 sessionID = jin.asJsonObject["id"].asString
                                 //아이디 중복검사 후 등록해야됨.
@@ -58,7 +59,7 @@ fun Application.configureSockets() {
 
                                 println("[INIT] sessionID: $sessionID, clients.size: ${clients.size},   $user")
                             }
-                            "방만들기" -> {
+                            Command.방만들기.name -> {
                                 //방장이 될 클라가 방만들기 command로 요청한 경우.
                                 //rooms map에 room 객체를 만들어 추가해야함.
                                 //room객체에는 jin에 있는 정보(title, pwd, roomid(useremail), groupid)등이 있어야함.
@@ -67,32 +68,39 @@ fun Application.configureSockets() {
                                 sessionWork.방만들기(user!!, jin)
 
                             }
-                            "방접속시실행" -> {
+                            Command.방접속요청.name -> {
+                                println("sessionWork.방접속요청() 실행. user: $user")
+                                sessionWork.방접속요청(user!!, jin)
+                            }
+                            Command.방참가수락.name -> {
+                                if (user != null) {
+                                    println("sessionWork.방참가수락() 실행. user: $user")
+                                    sessionWork.방참가수락(user, jin)
+                                } else{
+                                    println("[방참가수락] user 객체가 없음.")
+                                }
+                            }
+                            Command.방접속.name -> {
                                 // 다른 클라가 방접속 command로 요청한 경우.
                                 // jin안의 클릭한 방정보(방장아이디)를 이용해 rooms객체에서 있는지 확인하고,
                                 // 거기에 이 유저(user변수)를 추가.
                                 // room객체를 찾아서 들어가면, 그것의 sessionState 값을 ready로 바꿔줘야할듯
 //                                sessionWork.onMessage(sessionID, jin)
                                 if (user != null) {
-                                    println("sessionWork.방접속시실행() 실행. user: $user")
-                                    sessionWork.방접속시실행(user, jin)
+                                    println("sessionWork.방접속() 실행. user: $user")
+                                    sessionWork.방접속(user, jin)
                                 } else{
                                     println("[방접속] user 객체가 없음.")
                                 }
 
                             }
-                            "방접속시도" -> {
-                                if (user != null) {
-                                    println("sessionWork.방접속시도() 실행. user: $user")
-                                    sessionWork.방접속시도(user, jin)
-                                } else{
-                                    println("[방접속시도] user 객체가 없음.")
-                                }
-
-                            }
-                            "signalingCommand" -> {
+                            Command.signalingCommand.name -> {
                                 //클라의 sendCommand() 메소드에 의한 메시지를 처리. OFFER, ANSWER, ICE 처리.
                                 sessionWork.onMessage(user!!, jin)
+                            }
+                            Command.접속해제.name -> {
+                                //해당 Peer의 room 접속상황과 세션을 종료.
+                                sessionWork.onSessionClose(user!!)
                             }
 
                         }
@@ -109,8 +117,10 @@ fun Application.configureSockets() {
             } catch (e: ClosedReceiveChannelException) {
                 println("onClose $sessionID $e")
                 sessionWork.onSessionClose(user)
-            } catch (e: Throwable) {
-                println("onError $sessionID $e")
+            } catch (e: Exception/*Throwable*/) {
+//                println("onError $sessionID ${e.printStackTrace()}")
+                println("onError2 $sessionID ${e.printStack()}")
+//                println("onError3 $sessionID ${e.stackTrace}")
                 sessionWork.onSessionClose(user)
             }
         }
@@ -120,6 +130,26 @@ fun Application.configureSockets() {
 
     }
 }
+
+
+enum class Command{
+    방만들기,
+    방접속요청,
+    방참가수락,
+    방접속시실행,
+    접속해제,
+    signalingCommand,
+    ws_init,
+    방종료,
+    방접속,
+    방없음,
+
+
+}
+
+
+
+
 
 suspend fun 초기접속시(ws: DefaultWebSocketServerSession, sessionWork: SessionWork) {
     //처음 접속할때 유저 정보를 검사하고 추가해주는 절차를 가짐.

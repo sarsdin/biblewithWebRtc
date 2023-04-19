@@ -1,11 +1,10 @@
 package future
 
-import Room
-import User
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import future.SessionManager.clients
 import future.SessionManager.rooms
+import future.plugins.Command
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
@@ -13,7 +12,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 import kotlin.coroutines.Continuation
-import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
 /**
@@ -38,7 +36,7 @@ object SessionManager {
     val clients = mutableMapOf<String, User>()
 
     //세션에 2명의 peer가 없으면 Impossible임.
-    // Room 객체의 sessionState변수로 대체. 각 방의 세션상태를 확인해야함.
+    // future.Room 객체의 sessionState변수로 대체. 각 방의 세션상태를 확인해야함.
 //    private var sessionState: WebRTCSessionState = WebRTCSessionState.Impossible
 
 }
@@ -59,7 +57,7 @@ class SessionWork {
      * 해당 방에서 제거될 수 있음.
      */
     var mRoom : Room = Room()
-//    lateinit var mRoom : Room
+//    lateinit var mRoom : future.Room
 
     fun 방만들기(user: User, jin: JsonObject) {
         sessionManagerScope.launch {
@@ -74,8 +72,9 @@ class SessionWork {
             //클래스의 멤버 변수에도 방금 만든 방 객체를 할당해준다.
             mRoom = rooms[user.id]!!
 
-            val jOut = 방목록(user, "방만들기")
+            val jOut = 방목록(user, Command.방만들기.name)
             jOut.addProperty("makerId", user.id) // 방장이 만들고나서 바로 접속할 수 있도록, 클라에서 처리하기 위해 사용됨.
+            jOut.add("roomInfo", 방정보가져오기(mRoom))
 
             println("방만들기: $mRoom")
             //websocket으로 접속중인 모든 클라이언트 중 방장과 같은 모임에 접속해 있는 클라이언트들을 뽑은뒤
@@ -91,31 +90,133 @@ class SessionWork {
         }
     }
 
+    fun 방정보가져오기(mRoom: Room): JsonObject {
+        return JsonObject().apply {
+            addProperty("makerId", mRoom.roomId)
+            addProperty("groupId", mRoom.groupId)
+            addProperty("pwd", mRoom.pwd)
+            addProperty("size", mRoom.size)
+            addProperty("title", mRoom.title)
+        }
+    }
+
 
     /**
-     * 클라이언트가 방접속시도시 방의 접속된 peerId들을 받아야함.
-     * 이때, 분기점: 방장이 수락을 하여야 받기 가능 or 일단 테스트용으로 받기 가능.
+     * 분기점: 방장이 수락을 하여야 받기 가능.
+     * 요청자 -> 방장
      */
-    fun 방접속시도(user: User, jin: JsonObject) {
+    fun 방접속요청(user: User, jin: JsonObject) {
         sessionManagerScope.launch {
             val roomId = jin["roomId"].asString
-            val room = rooms[roomId]!!
 
-            val jo = room.users.run {
-                val tmp = JsonArray()
-                forEach {
-                    tmp.add(it.id)
+            //방장아이디 == roomId
+            logger.info("방접속요청")
+            println("방접속요청: $jin") // mRoom은 현재 빈객체인데? 왜 써놨지?
+
+            //일단 요청이 들어오면, 방에 요청목록에 이 유저를 넣고, 방장 객체를 찾아서 방장에게 요청을 전달함.
+            // 전달할때 요청한 유저의 정보를 같이 보내야함.
+            if (rooms.containsKey(roomId)){
+                println("방접속요청: 1")
+                val room = rooms[roomId]!!
+                println("방접속요청: 2")
+                room.users.find {
+                    println("방접속요청: 3")
+                    it.id == roomId
+                }?.let { roomMaker ->
+                    println("방접속요청: 4")
+                    //해당 유저를 이 방의 접속요청자로 추가하고,
+                    room.requestL.add(user)
+                    println("방접속요청: 5")
+                    // 방장에게 이 유저의 요청정보를 보냄.
+                    roomMaker.socket.send(Frame.Text(JsonObject().run {
+                        println("방접속요청: 6")
+                        addProperty("command", Command.방접속요청.name)
+                        addProperty("roomId", roomId)
+//                        addProperty("userId", user.id)
+//                        addProperty("nick", user.nick)
+//                        addProperty("groupId", user.groupId)
+                        add("requestL", room.getJsonRequestL())
+                        println("방접속요청: 7")
+                        toString()
+                    }))
+                    println("방접속요청: 8")
                 }
-                tmp
             }
 
-            logger.info("방접속시도: $jo")
-            println("방접속시도: $mRoom")
-            user.socket.send(Frame.Text(JsonObject().run {
-                addProperty("command", "방접속시도")
-                add("userIds", jo)
-                toString()
-            }))
+
+        }
+    }
+
+    /**
+     * 클라이언트가 방접속시 방의 접속된 peerId들을 받아야함.
+     */
+    fun 방참가수락(user: User, jin: JsonObject) {
+        sessionManagerScope.launch {
+            try {
+    //            val roomId = jin["roomId"].asString
+                val roomId = mRoom.roomId
+    //            val room = rooms[roomId]!!
+
+                //방의 유저들 id를 받아서,
+    //            val jarry = room.users.run {
+    //                val tmp = JsonArray()
+    //                forEach {
+    //                    tmp.add(it.id)
+    //                }
+    //                tmp
+    //            }
+                val jarry = 방의유저들정보(roomId)
+
+                logger.info("방참가수락: $jarry")
+                println("방참가수락: $mRoom")
+
+                //요청명단에서 요청자를 찾고,
+                mRoom.requestL.find {
+                    it.id == jin["userId"].asString
+                }?.let { requestUser ->
+                    //요청자가 여전히 존재하면, 참가하라는 신호와 방의 유저들 정보를 보냄.
+                    requestUser.socket.send(Frame.Text(
+                        JsonObject().run {
+                            addProperty("command", Command.방참가수락.name)
+                            addProperty("makerId", user.id)
+                            add("usersInfo", jarry)
+                            toString()
+                        }
+                    ))
+                    //그리고, 요청자 명단에서 요청자를 제거해줌.
+                    mRoom.requestL.remove(requestUser)
+                }
+
+                //방장에게는 갱신된 requestL 명단을 보내줘야함.
+                user.socket.send(Frame.Text(JsonObject().run {
+                    addProperty("command", Command.방접속요청.name)
+                    addProperty("roomId", roomId)
+                    add("requestL", mRoom.getJsonRequestL())
+                    toString()
+                }))
+
+            } catch (e: Exception){
+                logger.error("${e.printStackTrace()}")
+            }
+        }
+    }
+
+    fun 방의유저들정보(roomId:String): JsonArray{
+        val room = rooms[roomId]!!
+
+        return room.users.run {
+            val tmp = JsonArray()
+            forEach {
+                tmp.add(
+                    JsonObject().apply jo@ {
+                        this@jo.addProperty("userId", it.id)
+                        this@jo.addProperty("groupId", it.groupId)
+                        this@jo.addProperty("nick", it.nick)
+                        this@jo.addProperty("privilege", it.privilege)
+                    }
+                )
+            }
+            tmp
         }
     }
 
@@ -124,7 +225,7 @@ class SessionWork {
     /**
      * 클라이언트가 방접속시 처음 실행되는 메소드.
      */
-    fun 방접속시실행(user: User, jin: JsonObject) {
+    fun 방접속(user: User, jin: JsonObject) {
         //세션이 시작되면 먼저 코루틴 하나 실행하고, mutex로 동시접근을 막아 중복 에러를 방지한다.
         // 기존은 이랬지만...
         // 다자간코드에서는 방만들고, 다른 클라가 그 방에 접속시 이 과정을 거치는게 맞을듯.
@@ -147,14 +248,13 @@ class SessionWork {
                         println("방인원수 초과.")
                         sessionManagerScope.launch(NonCancellable) {
                             user.socket.send(Frame.Text(JsonObject().run {
-                                addProperty("command", "방접속")
+                                addProperty("command", Command.방없음.name)
                                 addProperty("content", "방인원수 초과.")
                                 toString()
                             }))
                         }
 
                     } else {
-                        // todo 방장의 수락 여부에 대한 부분 추가예정
                         //방에 접속한 유저를 넣어줌.
                         room.users.add(user)
                         println("방에 접속한 유저를 넣어줌 : ${room.users}")
@@ -171,7 +271,8 @@ class SessionWork {
                         // todo  여기서 command만 날리는데, 방접속인원 리스트까지 같이 줘야함.
                         //  참가 안누르고 대기해있는동안 방의 접속원이 변경될 수 있기 때문.
                         user.socket.send(Frame.Text(JsonObject().run {
-                            addProperty("command", "방접속")
+                            addProperty("command", Command.방접속.name)
+                            add("roomInfo", 방정보가져오기(mRoom))
                             toString()
                         }))
 
@@ -196,7 +297,7 @@ class SessionWork {
                     println("방없음.")
                     sessionManagerScope.launch(NonCancellable) {
                         user.socket.send(Frame.Text(JsonObject().run {
-                            addProperty("command", "방접속")
+                            addProperty("command", Command.방없음.name)
                             addProperty("content", "방없음.")
                             toString()
                         }))
@@ -262,7 +363,7 @@ class SessionWork {
      * STATE 상태를 전달하기 하지만, 어떤 전달할 명령을 담고 있진 않음.
      * 대신, Impossible 이라는 상태를 보냄. 클라이언트에게 아직 2명이상의 연결을 할 상황이 안된다는 것을 알려주는 것임.
      */
-//    private fun handleState(sessionId: User) {
+//    private fun handleState(sessionId: future.User) {
 //        val jOut = JsonObject()
 //        jOut.addProperty("command", "signalingCommand")
 //        jOut.addProperty("signalingCommand", "${MessageType.STATE}")
@@ -309,7 +410,7 @@ class SessionWork {
         // 그에따라 addIceCandidate()메소드가 너무 많이 실행되지 않나? 그러면 문제 생기지 않을까??
         // 여기 user에서 peerId 받고 전달할때도 추가해야함.
         val jOut = JsonObject().apply {
-            addProperty("command", "signalingCommand")
+            addProperty("command", Command.signalingCommand.name)
             addProperty("signalingCommand", "${MessageType.OFFER}")
             addProperty("peerId", message["peerId"].asString)
             addProperty("sdp", message["sdp"].asString)
@@ -335,7 +436,7 @@ class SessionWork {
 
         //새코드: Answer보낸 클라를 제외한 방의 모든 클라에 Answer보낸 클라의 sdp를 전달.
         val jOut = JsonObject().apply {
-            addProperty("command", "signalingCommand")
+            addProperty("command", Command.signalingCommand.name)
             addProperty("signalingCommand", "${MessageType.ANSWER}")
             addProperty("peerId", message["peerId"].asString)
             addProperty("sdp", message["sdp"].asString)
@@ -366,7 +467,7 @@ class SessionWork {
         //새코드: 각 ICE 과정(OFFER, ANSWER)에서 실행되는 onIcecandidate()의 실행결과 웹소켓을 통해
         //이곳까지 전달됨.
         val jOut = JsonObject().apply {
-            addProperty("command", "signalingCommand")
+            addProperty("command", Command.signalingCommand.name)
             addProperty("signalingCommand", "${MessageType.ICE}")
             addProperty("peerId", message["peerId"].asString)
             addProperty("peerIdOf", message["peerIdOf"].asString)
@@ -413,7 +514,7 @@ class SessionWork {
 //                mRoom.sessionState = WebRTCSessionState.Impossible
 //                notifyAboutStateUpdate(mRoom)
                 val jOut = JsonObject().apply {
-                    addProperty("command", "signalingCommand")
+                    addProperty("command", Command.signalingCommand.name)
                     addProperty("signalingCommand", "${MessageType.CLOSE}")
                     addProperty("peerId", user?.id)
                 }
@@ -437,7 +538,7 @@ class SessionWork {
                             it.value.groupId == user?.groupId
                         }.forEach {
                             it.value.socket.send(Frame.Text(JsonObject().run {
-                                addProperty("command", "방종료")
+                                addProperty("command", Command.방종료.name)
                                 addProperty("roomId", user?.id)
                                 toString()
                             }))
@@ -469,7 +570,7 @@ class SessionWork {
 
     private fun notifyAboutStateUpdate(room: Room) {
         val jOut = JsonObject()
-        jOut.addProperty("command", "signalingCommand")
+        jOut.addProperty("command", Command.signalingCommand.name)
         jOut.addProperty("signalingCommand", "${MessageType.STATE}")
         jOut.addProperty("sessionState", "${room.sessionState}")
         room.users.forEach {
